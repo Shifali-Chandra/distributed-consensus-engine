@@ -18,12 +18,15 @@ class Node:
         self.term = 0
         self.voted_for = None
         self.leader = None
+        self.leader_host = None
+        self.leader_port = None
         self.heartbeat_time = time.time()
         self.vote_count = 0
         self.host = "0.0.0.0"
         self.peers = []
         self.last_election_time = 0
         self.election_timeout = random.uniform(ELECTION_TIMEOUT_MIN, ELECTION_TIMEOUT_MAX)
+        self.ledger = []
         peer_list = os.getenv("PEERS", "")
         if peer_list:
             for peer in peer_list.split(","):
@@ -61,6 +64,8 @@ class Node:
                 heartbeat = {
                     "type": "HEARTBEAT",
                     "leader_id": self.node_id,
+                    "leader_host": self.host,
+                    "leader_port": self.port,
                     "term": self.term
                 }
                 await self.send_to_all(heartbeat)
@@ -147,7 +152,36 @@ class Node:
             self.term = leader_term
             self.role = "follower"
             self.leader = message["leader_id"]
+            self.leader_host = message.get("leader_host", "localhost")
+            self.leader_port = message.get("leader_port", 8000 + self.leader)
             self.heartbeat_time = time.time()
+
+    async def append_transaction(self, transaction):
+        self.ledger.append(transaction)
+        with open(f"ledger_node_{self.node_id}.log", "a") as f:
+            f.write(json.dumps(transaction) + "\n")
+        print(f"[Node {self.node_id}] Transaction committed: {transaction['transaction_id']}")
+
+    async def forward_to_leader(self, message):
+        if self.leader_host and self.leader_port:
+            await self.send(self.leader_host, self.leader_port, message)
+
+    async def process_transaction(self, message):
+        if self.role == "leader":
+            transaction_id = message["transaction_id"]
+            payload = message["payload"]
+            transaction = {
+                "transaction_id": transaction_id,
+                "payload": payload
+            }
+            await self.append_transaction(transaction)
+        else:
+            transaction_id = message.get("transaction_id", "UNKNOWN")
+            if self.leader:
+                print(f"[Node {self.node_id}] Forwarding {transaction_id} to leader Node {self.leader}")
+                await self.forward_to_leader(message)
+            else:
+                print(f"[Node {self.node_id}] No leader available for {transaction_id}")
 
     async def process_message(self, message):
         msg_type = message["type"]
@@ -157,6 +191,10 @@ class Node:
             await self.process_vote_request(message)
         elif msg_type == "VOTE_RESPONSE":
             await self.process_vote_response(message)
+        elif msg_type == "TRANSACTION":
+            await self.process_transaction(message)
+        elif msg_type == "TRANSACTION":
+            await self.process_transaction(message)
 
     async def handle_connection(self, reader, writer):
         try:
