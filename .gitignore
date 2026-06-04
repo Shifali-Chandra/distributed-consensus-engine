@@ -1,0 +1,13 @@
+# Runtime ledger files
+ledger_node_*.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+
+# IDE files
+.vscode/
+.idea/
