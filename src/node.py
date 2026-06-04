@@ -27,6 +27,11 @@ class Node:
         self.last_election_time = 0
         self.election_timeout = random.uniform(ELECTION_TIMEOUT_MIN, ELECTION_TIMEOUT_MAX)
         self.ledger = []
+        self.promise_counts = {}
+        self.accepted_counts = {}
+        self.pending_transactions = {}
+        self.accept_sent = set()
+        self.promise_complete = set()
         peer_list = os.getenv("PEERS", "")
         if peer_list:
             for peer in peer_list.split(","):
@@ -64,7 +69,7 @@ class Node:
                 heartbeat = {
                     "type": "HEARTBEAT",
                     "leader_id": self.node_id,
-                    "leader_host": self.host,
+                    "leader_host": "localhost",
                     "leader_port": self.port,
                     "term": self.term
                 }
@@ -168,13 +173,13 @@ class Node:
 
     async def process_transaction(self, message):
         if self.role == "leader":
-            transaction_id = message["transaction_id"]
-            payload = message["payload"]
+            transaction_id = message.get("transaction_id", "UNKNOWN")
+            payload = message.get("payload", "")
             transaction = {
                 "transaction_id": transaction_id,
                 "payload": payload
             }
-            await self.append_transaction(transaction)
+            await self.start_paxos(transaction)
         else:
             transaction_id = message.get("transaction_id", "UNKNOWN")
             if self.leader:
@@ -182,6 +187,97 @@ class Node:
                 await self.forward_to_leader(message)
             else:
                 print(f"[Node {self.node_id}] No leader available for {transaction_id}")
+
+    async def start_paxos(self, transaction):
+        transaction_id = transaction.get("transaction_id", "UNKNOWN")
+        self.pending_transactions[transaction_id] = transaction
+        self.promise_counts[transaction_id] = self.promise_counts.get(transaction_id, 0) + 1
+        self.accepted_counts[transaction_id] = self.accepted_counts.get(transaction_id, 0)
+        self.accept_sent.discard(transaction_id)
+        prepare_msg = {
+            "type": "PREPARE",
+            "transaction": transaction
+        }
+        print(f"[Node {self.node_id}] PREPARE {transaction_id}")  
+        await self.send_to_all(prepare_msg)
+
+    async def process_prepare(self, message):
+        try:
+            transaction = message.get("transaction", {})
+            transaction_id = transaction.get("transaction_id", "UNKNOWN")
+            promise_msg = {
+                "type": "PROMISE",
+                "transaction_id": transaction_id
+            }
+            if self.leader and self.leader_port:
+                print(f"[Node {self.node_id}] Sending PROMISE for {transaction_id}")
+                await self.send(self.leader_host, self.leader_port, promise_msg)
+        except Exception as err:
+            print(f"[Node {self.node_id}] Error: {err}")
+
+    async def process_promise(self, message):
+        if self.role != "leader":
+            return
+        try:
+            transaction_id = message.get("transaction_id", "UNKNOWN")
+            if transaction_id in self.promise_complete:
+                return
+            if transaction_id not in self.pending_transactions:
+                return
+            self.promise_counts[transaction_id] = self.promise_counts.get(transaction_id, 0) + 1
+            print(f"[Node {self.node_id}] PROMISE count={self.promise_counts[transaction_id]}")
+            if self.promise_counts[transaction_id] >= self.get_majority() and transaction_id not in self.accept_sent:
+                self.promise_complete.add(transaction_id)
+                self.accept_sent.add(transaction_id)
+                transaction = self.pending_transactions.get(transaction_id)
+                if transaction is None:
+                    return
+                self.accepted_counts[transaction_id] = 1
+                accept_msg = {
+                    "type": "ACCEPT",
+                    "transaction": transaction
+                }
+                print(f"[Node {self.node_id}] ACCEPT {transaction_id}")
+                await self.send_to_all(accept_msg)
+        except Exception as err:
+            print(f"[Node {self.node_id}] Error: {err}")
+
+    async def process_accept(self, message):
+        try:
+            transaction = message.get("transaction", {})
+            transaction_id = transaction.get("transaction_id", "UNKNOWN")
+            accepted_msg = {
+                "type": "ACCEPTED",
+                "transaction_id": transaction_id
+            }
+            if self.leader and self.leader_port:
+                print(f"[Node {self.node_id}] Sending ACCEPTED for {transaction_id}")
+                await self.send(self.leader_host, self.leader_port, accepted_msg)
+        except Exception as err:
+            print(f"[Node {self.node_id}] Error: {err}")
+
+    async def process_accepted(self, message):
+        if self.role != "leader":
+            return
+        try:
+            transaction_id = message.get("transaction_id", "UNKNOWN")
+            if transaction_id not in self.pending_transactions:
+                return
+            self.accepted_counts[transaction_id] = self.accepted_counts.get(transaction_id, 0) + 1
+            print(f"[Node {self.node_id}] ACCEPTED count={self.accepted_counts[transaction_id]}")
+            if self.accepted_counts[transaction_id] >= self.get_majority():
+                transaction = self.pending_transactions.get(transaction_id)
+                if transaction is None:
+                    return
+                await self.append_transaction(transaction)
+                print(f"[Node {self.node_id}] Paxos consensus reached for {transaction_id}")
+                self.pending_transactions.pop(transaction_id, None)
+                self.promise_counts.pop(transaction_id, None)
+                self.accepted_counts.pop(transaction_id, None)
+                self.accept_sent.discard(transaction_id)
+                self.promise_complete.discard(transaction_id)
+        except Exception as err:
+            print(f"[Node {self.node_id}] Error: {err}")
 
     async def process_message(self, message):
         msg_type = message["type"]
@@ -193,8 +289,14 @@ class Node:
             await self.process_vote_response(message)
         elif msg_type == "TRANSACTION":
             await self.process_transaction(message)
-        elif msg_type == "TRANSACTION":
-            await self.process_transaction(message)
+        elif msg_type == "PREPARE":
+            await self.process_prepare(message)
+        elif msg_type == "PROMISE":
+            await self.process_promise(message)
+        elif msg_type == "ACCEPT":
+            await self.process_accept(message)
+        elif msg_type == "ACCEPTED":
+            await self.process_accepted(message)
 
     async def handle_connection(self, reader, writer):
         try:
@@ -203,7 +305,7 @@ class Node:
                 message = json.loads(data.decode())
                 await self.process_message(message)
         except Exception as err:
-            print(f"[Node {self.node_id}] {err}")
+            print(f"[Node {self.node_id}] Error: {err}")
         finally:
             writer.close()
             await writer.wait_closed()
