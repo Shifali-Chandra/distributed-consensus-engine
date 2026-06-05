@@ -11,3 +11,11 @@ __pycache__/
 # IDE files
 .vscode/
 .idea/
+
+# Generated keys
+keys/
+src/keys/
+*.pem
+
+# Debug logs
+logs/
