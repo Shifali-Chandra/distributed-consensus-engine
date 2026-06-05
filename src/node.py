@@ -4,6 +4,8 @@ import os
 import time
 import random
 
+from crypto_utils import sign_message, verify_signature
+
 HEARTBEAT_INTERVAL = 2
 ELECTION_TIMEOUT_MIN = 6
 ELECTION_TIMEOUT_MAX = 9
@@ -22,7 +24,7 @@ class Node:
         self.leader_port = None
         self.heartbeat_time = time.time()
         self.vote_count = 0
-        self.host = "0.0.0.0"
+        self.host="localhost"
         self.peers = []
         self.last_election_time = 0
         self.election_timeout = random.uniform(ELECTION_TIMEOUT_MIN, ELECTION_TIMEOUT_MAX)
@@ -32,6 +34,14 @@ class Node:
         self.pending_transactions = {}
         self.accept_sent = set()
         self.promise_complete = set()
+        self.mode = os.getenv("CONSENSUS_MODE", "PAXOS")
+        self.pbft_prepare_counts = {}
+        self.pbft_commit_counts = {}
+        self.pbft_transactions = {}
+        self.pbft_prepare_sent = set()
+        self.pbft_commit_sent = set()
+        self.pbft_prepare_complete=set()
+        self.pbft_completed=set()
         peer_list = os.getenv("PEERS", "")
         if peer_list:
             for peer in peer_list.split(","):
@@ -109,10 +119,12 @@ class Node:
         await self.send_to_all(vote_request)
 
     async def make_leader(self):
-        self.role = "leader"
-        self.leader = self.node_id
-        self.heartbeat_time = time.time()
-        self.last_election_time = time.time()
+        self.role="leader"
+        self.leader=self.node_id
+        self.leader_host="localhost"
+        self.leader_port=self.port
+        self.heartbeat_time=time.time()
+        self.last_election_time=time.time()
         print(f"[Node {self.node_id}] *** LEADER ELECTED ***")
 
     async def process_vote_request(self, message):
@@ -151,15 +163,17 @@ class Node:
             if self.vote_count >= self.get_majority():
                 await self.make_leader()
 
-    async def process_heartbeat(self, message):
-        leader_term = message["term"]
-        if leader_term >= self.term:
-            self.term = leader_term
-            self.role = "follower"
-            self.leader = message["leader_id"]
-            self.leader_host = message.get("leader_host", "localhost")
-            self.leader_port = message.get("leader_port", 8000 + self.leader)
-            self.heartbeat_time = time.time()
+    async def process_heartbeat(self,message):
+        if message["leader_id"]==self.node_id:
+            return
+        leader_term=message["term"]
+        if leader_term>=self.term:
+            self.term=leader_term
+            self.role="follower"
+            self.leader=message["leader_id"]
+            self.leader_host=message.get("leader_host","localhost")
+            self.leader_port=message.get("leader_port",8000+self.leader)
+            self.heartbeat_time=time.time()
 
     async def append_transaction(self, transaction):
         self.ledger.append(transaction)
@@ -172,14 +186,17 @@ class Node:
             await self.send(self.leader_host, self.leader_port, message)
 
     async def process_transaction(self, message):
-        if self.role == "leader":
+        if self.role=="leader" and self.leader==self.node_id:
             transaction_id = message.get("transaction_id", "UNKNOWN")
             payload = message.get("payload", "")
             transaction = {
                 "transaction_id": transaction_id,
                 "payload": payload
             }
-            await self.start_paxos(transaction)
+            if self.mode == "PBFT":
+                await self.start_pbft(transaction)
+            else:
+                await self.start_paxos(transaction)
         else:
             transaction_id = message.get("transaction_id", "UNKNOWN")
             if self.leader:
@@ -279,6 +296,109 @@ class Node:
         except Exception as err:
             print(f"[Node {self.node_id}] Error: {err}")
 
+    async def start_pbft(self, transaction):
+        transaction_id = transaction.get("transaction_id", "UNKNOWN")
+        self.pbft_transactions[transaction_id] = transaction
+        signature = sign_message(self.node_id, transaction)
+        pre_prepare_msg = {
+            "type": "PRE_PREPARE",
+            "transaction": transaction,
+            "sender": self.node_id,
+            "signature": signature
+        }
+        print(f"[Node {self.node_id}] PRE-PREPARE {transaction_id}")
+        await self.send_to_all(pre_prepare_msg)
+
+    async def process_pre_prepare(self, message):
+        try:
+            transaction = message.get("transaction", {})
+            transaction_id = transaction.get("transaction_id", "UNKNOWN")
+            sender = message.get("sender")
+            signature = message.get("signature")
+            if sender is None or signature is None:
+                return
+            if not verify_signature(sender, transaction, signature):
+                print(f"[Node {self.node_id}] PRE-PREPARE signature invalid for {transaction_id}")
+                return
+            self.pbft_transactions[transaction_id] = transaction
+            if transaction_id in self.pbft_prepare_sent:
+                return
+            self.pbft_prepare_sent.add(transaction_id)
+            prepare_payload = {"transaction_id": transaction_id}
+            prepare_signature = sign_message(self.node_id, prepare_payload)
+            prepare_msg = {
+                "type": "PBFT_PREPARE",
+                "transaction_id": transaction_id,
+                "sender": self.node_id,
+                "signature": prepare_signature
+            }
+            print(f"[Node {self.node_id}] PREPARE {transaction_id}")
+            await self.send_to_all(prepare_msg)
+        except Exception as err:
+            print(f"[Node {self.node_id}] Error: {err}")
+
+    async def process_pbft_prepare(self,message):
+        try:
+            transaction_id=message.get("transaction_id","UNKNOWN")
+            sender=message.get("sender")
+            signature=message.get("signature")
+            if sender is None or signature is None:
+                return
+            if transaction_id in self.pbft_prepare_complete:
+                return
+            if not verify_signature(sender,{"transaction_id":transaction_id},signature):
+                print(f"[Node {self.node_id}] PBFT_PREPARE signature invalid for {transaction_id}")
+                return
+            self.pbft_prepare_counts[transaction_id]=self.pbft_prepare_counts.get(transaction_id,0)+1
+            count=self.pbft_prepare_counts[transaction_id]
+            print(f"[Node {self.node_id}] PREPARE count={count} for {transaction_id}")
+            if count>=3 and transaction_id not in self.pbft_commit_sent:
+                self.pbft_prepare_complete.add(transaction_id)
+                self.pbft_commit_sent.add(transaction_id)
+                commit_payload={"transaction_id":transaction_id}
+                commit_signature=sign_message(self.node_id,commit_payload)
+                commit_msg={
+                    "type":"PBFT_COMMIT",
+                    "transaction_id":transaction_id,
+                    "sender":self.node_id,
+                    "signature":commit_signature
+                }
+                print(f"[Node {self.node_id}] COMMIT {transaction_id}")
+                await self.send_to_all(commit_msg)
+        except Exception as err:
+            print(f"[Node {self.node_id}] Error: {err}")
+
+    async def process_pbft_commit(self,message):
+        try:
+            transaction_id=message.get("transaction_id","UNKNOWN")
+            sender=message.get("sender")
+            signature=message.get("signature")
+            if sender is None or signature is None:
+                return
+            if transaction_id in self.pbft_completed:
+                return
+            if not verify_signature(sender,{"transaction_id":transaction_id},signature):
+                print(f"[Node {self.node_id}] PBFT_COMMIT signature invalid for {transaction_id}")
+                return
+            self.pbft_commit_counts[transaction_id]=self.pbft_commit_counts.get(transaction_id,0)+1
+            count=self.pbft_commit_counts[transaction_id]
+            print(f"[Node {self.node_id}] COMMIT count={count} for {transaction_id}")
+            if count>=3:
+                self.pbft_completed.add(transaction_id)
+                transaction=self.pbft_transactions.get(transaction_id)
+                if transaction is None:
+                    return
+                await self.append_transaction(transaction)
+                print(f"[Node {self.node_id}] PBFT consensus reached for {transaction_id}")
+                self.pbft_transactions.pop(transaction_id,None)
+                self.pbft_prepare_counts.pop(transaction_id,None)
+                self.pbft_commit_counts.pop(transaction_id,None)
+                self.pbft_prepare_sent.discard(transaction_id)
+                self.pbft_commit_sent.discard(transaction_id)
+                self.pbft_prepare_complete.discard(transaction_id)
+        except Exception as err:
+            print(f"[Node {self.node_id}] Error: {err}")
+
     async def process_message(self, message):
         msg_type = message["type"]
         if msg_type == "HEARTBEAT":
@@ -297,6 +417,12 @@ class Node:
             await self.process_accept(message)
         elif msg_type == "ACCEPTED":
             await self.process_accepted(message)
+        elif msg_type == "PRE_PREPARE":
+            await self.process_pre_prepare(message)
+        elif msg_type == "PBFT_PREPARE":
+            await self.process_pbft_prepare(message)
+        elif msg_type == "PBFT_COMMIT":
+            await self.process_pbft_commit(message)
 
     async def handle_connection(self, reader, writer):
         try:
