@@ -1,0 +1,108 @@
+version: "3.8"
+
+services:
+  # Node 1 - PBFT consensus node on port 8001
+  node1:
+    build: .
+    container_name: node1
+    environment:
+      - CONSENSUS_MODE=PBFT
+      - NODE_ID=1
+      - NODE_PORT=8001
+      - PEERS=node2:8002,node3:8003,node4:8004,node5:8005
+    ports:
+      - "8001:8001"
+    volumes:
+      - .:/app
+    networks:
+      - consensus-network
+
+  # Node 2 - PBFT consensus node on port 8002
+  node2:
+    build: .
+    container_name: node2
+    environment:
+      - CONSENSUS_MODE=PBFT
+      - NODE_ID=2
+      - NODE_PORT=8002
+      - PEERS=node1:8001,node3:8003,node4:8004,node5:8005
+    ports:
+      - "8002:8002"
+    volumes:
+      - .:/app
+    networks:
+      - consensus-network
+
+  # Node 3 - PBFT consensus node on port 8003
+  node3:
+    build: .
+    container_name: node3
+    environment:
+      - CONSENSUS_MODE=PBFT
+      - NODE_ID=3
+      - NODE_PORT=8003
+      - PEERS=node1:8001,node2:8002,node4:8004,node5:8005
+    ports:
+      - "8003:8003"
+    volumes:
+      - .:/app
+    networks:
+      - consensus-network
+
+  # Node 4 - PBFT consensus node on port 8004
+  node4:
+    build: .
+    container_name: node4
+    environment:
+      - CONSENSUS_MODE=PBFT
+      - NODE_ID=4
+      - NODE_PORT=8004
+      - PEERS=node1:8001,node2:8002,node3:8003,node5:8005
+    ports:
+      - "8004:8004"
+    volumes:
+      - .:/app
+    networks:
+      - consensus-network
+
+  # Node 5 - PBFT consensus node on port 8005
+  node5:
+    build: .
+    container_name: node5
+    environment:
+      - CONSENSUS_MODE=PBFT
+      - BYZANTINE_MODE=INVALID_SIGNATURE
+      - NODE_ID=5
+      - NODE_PORT=8005
+      - PEERS=node1:8001,node2:8002,node3:8003,node4:8004
+    command: python src/adversary.py
+    ports:
+      - "8005:8005"
+    volumes:
+      - .:/app
+    networks:
+      - consensus-network
+
+  # Client - submits transactions to the leader
+  client:
+    build: .
+    container_name: client
+    environment:
+      - CONSENSUS_MODE=PBFT
+      - CLIENT_TARGET_HOST=node1
+      - CLIENT_TARGET_PORT=8001
+    depends_on:
+      - node1
+      - node2
+      - node3
+      - node4
+      - node5
+    volumes:
+      - .:/app
+    networks:
+      - consensus-network
+    command: python src/client.py
+
+networks:
+  consensus-network:
+    driver: bridge
