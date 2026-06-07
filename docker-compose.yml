@@ -6,7 +6,7 @@ services:
     build: .
     container_name: node1
     environment:
-      - CONSENSUS_MODE=PBFT
+      - CONSENSUS_MODE=${CONSENSUS_MODE}
       - NODE_ID=1
       - NODE_PORT=8001
       - PEERS=node2:8002,node3:8003,node4:8004,node5:8005
@@ -22,7 +22,7 @@ services:
     build: .
     container_name: node2
     environment:
-      - CONSENSUS_MODE=PBFT
+      - CONSENSUS_MODE=${CONSENSUS_MODE}
       - NODE_ID=2
       - NODE_PORT=8002
       - PEERS=node1:8001,node3:8003,node4:8004,node5:8005
@@ -38,7 +38,7 @@ services:
     build: .
     container_name: node3
     environment:
-      - CONSENSUS_MODE=PBFT
+      - CONSENSUS_MODE=${CONSENSUS_MODE}
       - NODE_ID=3
       - NODE_PORT=8003
       - PEERS=node1:8001,node2:8002,node4:8004,node5:8005
@@ -54,7 +54,7 @@ services:
     build: .
     container_name: node4
     environment:
-      - CONSENSUS_MODE=PBFT
+      - CONSENSUS_MODE=${CONSENSUS_MODE}
       - NODE_ID=4
       - NODE_PORT=8004
       - PEERS=node1:8001,node2:8002,node3:8003,node5:8005
@@ -70,12 +70,12 @@ services:
     build: .
     container_name: node5
     environment:
-      - CONSENSUS_MODE=PBFT
+      - CONSENSUS_MODE=${CONSENSUS_MODE}
       - BYZANTINE_MODE=INVALID_SIGNATURE
       - NODE_ID=5
       - NODE_PORT=8005
       - PEERS=node1:8001,node2:8002,node3:8003,node4:8004
-    command: python src/adversary.py
+    command: python -u src/adversary.py
     ports:
       - "8005:8005"
     volumes:
@@ -88,7 +88,7 @@ services:
     build: .
     container_name: client
     environment:
-      - CONSENSUS_MODE=PBFT
+      - CONSENSUS_MODE=${CONSENSUS_MODE}
       - CLIENT_TARGET_HOST=node1
       - CLIENT_TARGET_PORT=8001
     depends_on:
@@ -101,7 +101,7 @@ services:
       - .:/app
     networks:
       - consensus-network
-    command: python src/client.py
+    command: python -u src/client.py
 
 networks:
   consensus-network:
