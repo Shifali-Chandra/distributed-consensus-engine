@@ -16,6 +16,10 @@ class AdversaryNode(Node):
         else:
             print(f"[Adversary {self.node_id}] Mode: {self.byzantine_mode or 'NORMAL'}")
 
+    async def start_election(self):
+        print(f"[Adversary {self.node_id}] Not participating in leader election")
+        return
+
     async def process_pre_prepare(self, message):
         transaction = message.get("transaction", {})
         transaction_id = transaction.get("transaction_id", "UNKNOWN")
