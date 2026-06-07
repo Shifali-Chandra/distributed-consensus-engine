@@ -9,4 +9,4 @@ COPY . .
 
 EXPOSE 8001 8002 8003 8004 8005
 
-CMD ["python", "src/node.py"]
+CMD ["python","-u","src/node.py"]
