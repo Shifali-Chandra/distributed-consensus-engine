@@ -15,6 +15,7 @@ ELECTION_DEBOUNCE = 1.5
 class Node:
     def __init__(self):
         self.node_id = int(os.getenv("NODE_ID"))
+        self.node_name = f"node{self.node_id}"
         self.port = int(os.getenv("NODE_PORT"))
         self.role = "follower"
         self.term = 0
@@ -24,7 +25,8 @@ class Node:
         self.leader_port = None
         self.heartbeat_time = time.time()
         self.vote_count = 0
-        self.host="localhost"
+        #self.host="localhost"
+        self.host = "0.0.0.0"
         self.peers = []
         self.last_election_time = 0
         self.election_timeout = random.uniform(ELECTION_TIMEOUT_MIN, ELECTION_TIMEOUT_MAX)
@@ -79,7 +81,7 @@ class Node:
                 heartbeat = {
                     "type": "HEARTBEAT",
                     "leader_id": self.node_id,
-                    "leader_host": "localhost",
+                    "leader_host": self.node_name,
                     "leader_port": self.port,
                     "term": self.term
                 }
@@ -112,7 +114,7 @@ class Node:
         vote_request = {
             "type": "VOTE_REQUEST",
             "candidate_id": self.node_id,
-            "candidate_host": "localhost",
+            "candidate_host": self.node_name,
             "candidate_port": self.port,
             "term": self.term
         }
@@ -121,7 +123,7 @@ class Node:
     async def make_leader(self):
         self.role="leader"
         self.leader=self.node_id
-        self.leader_host="localhost"
+        self.leader_host=self.node_name
         self.leader_port=self.port
         self.heartbeat_time=time.time()
         self.last_election_time=time.time()
@@ -171,8 +173,8 @@ class Node:
             self.term=leader_term
             self.role="follower"
             self.leader=message["leader_id"]
-            self.leader_host=message.get("leader_host","localhost")
-            self.leader_port=message.get("leader_port",8000+self.leader)
+            self.leader_host=message.get("leader_host")
+            self.leader_port=message.get("leader_port", 8000+self.leader)
             self.heartbeat_time=time.time()
 
     async def append_transaction(self, transaction):
